@@ -138,10 +138,16 @@ namespace opencv_cam
     cv::Mat frame;
 
     while (rclcpp::ok() && !canceled_.load()) {
-      // Read a frame, if this is a device block until a frame is available
+      // Read a frame, if this is a file and we're at the end, loop back to the start
       if (!capture_->read(frame)) {
-        RCLCPP_INFO(get_logger(), "EOF, stop publishing");
-        break;
+        if (cxt_.file_) {
+          RCLCPP_INFO(get_logger(), "Reached EOF, looping back to start.");
+          capture_->set(cv::CAP_PROP_POS_FRAMES, 0); // Loop back to start
+          continue; // Skip the rest of this iteration and try reading again
+        } else {
+          RCLCPP_INFO(get_logger(), "EOF or error reading frame, stop publishing");
+          break;
+        }
       }
 
       auto stamp = now();
