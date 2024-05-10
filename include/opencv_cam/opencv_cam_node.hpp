@@ -8,6 +8,7 @@
 #include "sensor_msgs/msg/image.hpp"
 
 #include "opencv_cam/camera_context.hpp"
+#include <std_srvs/srv/trigger.hpp>
 
 namespace opencv_cam
 {
@@ -18,6 +19,7 @@ namespace opencv_cam
 
     std::thread thread_;
     std::atomic<bool> canceled_;
+    bool publish_next_;
 
     std::shared_ptr<cv::VideoCapture> capture_;
     sensor_msgs::msg::CameraInfo camera_info_msg_;
@@ -27,6 +29,7 @@ namespace opencv_cam
 
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
     rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr camera_info_pub_;
+    rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr trigger_service_;
 
   public:
 
@@ -36,8 +39,12 @@ namespace opencv_cam
 
   private:
 
-    void validate_parameters();
+      void trigger_callback(
+        const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response);
 
+    void validate_parameters();
+    
     void loop();
   };
 

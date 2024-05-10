@@ -25,7 +25,8 @@ namespace opencv_cam
 
   OpencvCamNode::OpencvCamNode(const rclcpp::NodeOptions &options) :
     Node("opencv_cam", options),
-    canceled_(false)
+    canceled_(false),
+    publish_next_(true)
   {
     RCLCPP_INFO(get_logger(), "use_intra_process_comms=%d", options.use_intra_process_comms());
 
@@ -114,6 +115,10 @@ namespace opencv_cam
     }
 
     image_pub_ = create_publisher<sensor_msgs::msg::Image>("image_raw", 10);
+    trigger_service_ = this->create_service<std_srvs::srv::Trigger>(
+      "trigger_capture",
+      std::bind(&OpencvCamNode::trigger_callback, this, std::placeholders::_1, std::placeholders::_2)
+    );
 
     // Run loop on it's own thread
     thread_ = std::thread(std::bind(&OpencvCamNode::loop, this));
@@ -132,6 +137,16 @@ namespace opencv_cam
 
   void OpencvCamNode::validate_parameters()
   {}
+
+  void OpencvCamNode::trigger_callback(
+      [[maybe_unused]] const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
+      std::shared_ptr<std_srvs::srv::Trigger::Response> response)
+  {
+    RCLCPP_DEBUG(this->get_logger(), "Received trigger request");
+    publish_next_ = true;
+    response->success = true;
+    response->message = "Capture triggered";
+  }
 
   void OpencvCamNode::loop()
   {
@@ -172,10 +187,13 @@ namespace opencv_cam
 #endif
 
       // Publish
-      image_pub_->publish(std::move(image_msg));
-      if (camera_info_pub_) {
-        camera_info_msg_.header.stamp = stamp;
-        camera_info_pub_->publish(camera_info_msg_);
+      if (cxt_.sync_mode_ == false || publish_next_) {
+        image_pub_->publish(std::move(image_msg));
+        if (camera_info_pub_) {
+          camera_info_msg_.header.stamp = stamp;
+          camera_info_pub_->publish(camera_info_msg_);
+        }
+        publish_next_ = false;
       }
 
       // Sleep if required
