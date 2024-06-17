@@ -52,6 +52,9 @@ namespace opencv_cam
 
     RCLCPP_INFO(get_logger(), "OpenCV version %d", CV_VERSION_MAJOR);
 
+    double width = 0;
+    double height = 0;
+
     // Open file or device
     if (cxt_.file_) {
       capture_ = std::make_shared<cv::VideoCapture>(cxt_.filename_);
@@ -69,8 +72,8 @@ namespace opencv_cam
         publish_fps_ = static_cast<int>(capture_->get(cv::CAP_PROP_FPS));
       }
 
-      double width = capture_->get(cv::CAP_PROP_FRAME_WIDTH);
-      double height = capture_->get(cv::CAP_PROP_FRAME_HEIGHT);
+      width = capture_->get(cv::CAP_PROP_FRAME_WIDTH);
+      height = capture_->get(cv::CAP_PROP_FRAME_HEIGHT);
       RCLCPP_INFO(get_logger(), "file %s open, width %g, height %g, publish fps %d",
                   cxt_.filename_.c_str(), width, height, publish_fps_);
 
@@ -96,8 +99,8 @@ namespace opencv_cam
         capture_->set(cv::CAP_PROP_FPS, cxt_.fps_);
       }
 
-      double width = capture_->get(cv::CAP_PROP_FRAME_WIDTH);
-      double height = capture_->get(cv::CAP_PROP_FRAME_HEIGHT);
+      width = capture_->get(cv::CAP_PROP_FRAME_WIDTH);
+      height = capture_->get(cv::CAP_PROP_FRAME_HEIGHT);
       double fps = capture_->get(cv::CAP_PROP_FPS);
       RCLCPP_INFO(get_logger(), "device %d open, width %g, height %g, device fps %g",
                   cxt_.index_, width, height, fps);
@@ -108,6 +111,8 @@ namespace opencv_cam
     if (camera_calibration_parsers::readCalibration(cxt_.camera_info_path_, camera_name, camera_info_msg_)) {
       RCLCPP_INFO(get_logger(), "got camera info for '%s'", camera_name.c_str());
       camera_info_msg_.header.frame_id = cxt_.camera_frame_id_;
+      camera_info_msg_.width = width;
+      camera_info_msg_.height = height;
       camera_info_pub_ = create_publisher<sensor_msgs::msg::CameraInfo>("camera_info", 10);
     } else {
       RCLCPP_ERROR(get_logger(), "cannot get camera info, will not publish");
