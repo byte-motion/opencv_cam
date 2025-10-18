@@ -3,6 +3,7 @@
 #include <iostream>
 
 #include "camera_calibration_parsers/parse.hpp"
+#include "opencv2/imgcodecs.hpp"
 
 namespace opencv_cam
 {
@@ -26,7 +27,9 @@ namespace opencv_cam
 
   OpencvCamNode::OpencvCamNode(const rclcpp::NodeOptions &options) : Node("opencv_cam", options),
                                                                      canceled_(false),
-                                                                     publish_next_(true)
+                                                                     publish_next_(true),
+                                                                     single_image_mode_(false),
+                                                                     publish_fps_(0)
   {
     RCLCPP_INFO(get_logger(), "use_intra_process_comms=%d", options.use_intra_process_comms());
 
@@ -60,10 +63,49 @@ namespace opencv_cam
     {
       capture_ = std::make_shared<cv::VideoCapture>(cxt_.filename_);
 
-      if (!capture_->isOpened())
+      if (!capture_ || !capture_->isOpened())
       {
         RCLCPP_ERROR(get_logger(), "cannot open file %s", cxt_.filename_.c_str());
         return;
+      }
+
+      // Decide if this is a single image or a stream of frames.
+      single_image_mode_ = cv::haveImageReader(cxt_.filename_);
+      if (!single_image_mode_)
+      {
+        const double frame_count = capture_->get(cv::CAP_PROP_FRAME_COUNT);
+        if (frame_count >= 0.0 && frame_count <= 1.0)
+        {
+          single_image_mode_ = true;
+        }
+      }
+
+      if (single_image_mode_)
+      {
+        cv::Mat first_frame;
+        if (!capture_->read(first_frame))
+        {
+          // Fallback to imread because some backends cannot rewind a single image.
+          first_frame = cv::imread(cxt_.filename_, cv::IMREAD_UNCHANGED);
+        }
+
+        if (first_frame.empty())
+        {
+          RCLCPP_ERROR(get_logger(), "failed to read image data from %s", cxt_.filename_.c_str());
+          return;
+        }
+
+        single_image_frame_ = first_frame;
+        width = static_cast<double>(single_image_frame_.cols);
+        height = static_cast<double>(single_image_frame_.rows);
+
+        // Reset the capture position in case we fall back to VideoCapture later.
+        capture_->set(cv::CAP_PROP_POS_FRAMES, 0);
+      }
+      else
+      {
+        width = capture_->get(cv::CAP_PROP_FRAME_WIDTH);
+        height = capture_->get(cv::CAP_PROP_FRAME_HEIGHT);
       }
 
       if (cxt_.fps_ > 0)
@@ -71,16 +113,14 @@ namespace opencv_cam
         // Publish at the specified rate
         publish_fps_ = cxt_.fps_;
       }
-      else
+      else if (!single_image_mode_)
       {
-        // Publish at the recorded rate
+        // Publish at the recorded rate when available
         publish_fps_ = static_cast<int>(capture_->get(cv::CAP_PROP_FPS));
       }
 
-      width = capture_->get(cv::CAP_PROP_FRAME_WIDTH);
-      height = capture_->get(cv::CAP_PROP_FRAME_HEIGHT);
-      RCLCPP_INFO(get_logger(), "file %s open, width %g, height %g, publish fps %d",
-                  cxt_.filename_.c_str(), width, height, publish_fps_);
+      RCLCPP_INFO(get_logger(), "file %s open, width %g, height %g, publish fps %d, single image mode %d",
+                  cxt_.filename_.c_str(), width, height, publish_fps_, static_cast<int>(single_image_mode_));
 
       next_stamp_ = now();
     }
@@ -170,22 +210,40 @@ namespace opencv_cam
   void OpencvCamNode::loop()
   {
     cv::Mat frame;
-    bool single_image_mode = cxt_.file_ && capture_->get(cv::CAP_PROP_FRAME_COUNT) == 1;
-    bool frame_loaded = false;
-    RCLCPP_INFO(get_logger(), "Single Image Mode = %d", single_image_mode);
+    RCLCPP_INFO(get_logger(), "Single Image Mode = %d", static_cast<int>(single_image_mode_));
 
     while (rclcpp::ok() && !canceled_.load())
     {
-      // Read a frame if not in single frame mode or if the frame hasn't been loaded yet
-      if (!single_image_mode || !frame_loaded)
+      if (single_image_mode_)
       {
-        if (!capture_->read(frame))
+        frame = single_image_frame_;
+      }
+      else
+      {
+        if (!capture_ || !capture_->read(frame))
         {
           if (cxt_.file_)
           {
             RCLCPP_INFO(get_logger(), "Reached EOF, looping back to start.");
-            capture_->set(cv::CAP_PROP_POS_FRAMES, 0); // Loop back to start
-            continue;                                  // Skip the rest of this iteration and try reading again
+            bool rewound = false;
+            if (capture_)
+            {
+              rewound = capture_->set(cv::CAP_PROP_POS_FRAMES, 0);
+              if (!rewound)
+              {
+                capture_->release();
+                rewound = capture_->open(cxt_.filename_);
+              }
+            }
+
+            if (!rewound || !capture_ || !capture_->read(frame))
+            {
+              RCLCPP_WARN(get_logger(), "Failed to read frame from %s after rewind, retrying",
+                          cxt_.filename_.c_str());
+              using namespace std::chrono_literals;
+              std::this_thread::sleep_for(10ms);
+              continue;
+            }
           }
           else
           {
@@ -193,12 +251,14 @@ namespace opencv_cam
             break;
           }
         }
+      }
 
-        // Mark the frame as loaded if we're in single frame mode
-        if (single_image_mode)
-        {
-          frame_loaded = true;
-        }
+      if (frame.empty())
+      {
+        RCLCPP_WARN(get_logger(), "Captured empty frame, skipping publish");
+        using namespace std::chrono_literals;
+        std::this_thread::sleep_for(10ms);
+        continue;
       }
 
       auto stamp = now();

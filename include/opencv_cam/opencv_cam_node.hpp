@@ -20,6 +20,8 @@ namespace opencv_cam
     std::thread thread_;
     std::atomic<bool> canceled_;
     bool publish_next_;
+    bool single_image_mode_;
+    cv::Mat single_image_frame_;
 
     std::shared_ptr<cv::VideoCapture> capture_;
     sensor_msgs::msg::CameraInfo camera_info_msg_;
